@@ -5,7 +5,7 @@ import './style.css';
 
 type Tx = { id: number; type: 'income'|'expense'; amountCents: number; category: string; description: string; date: string };
 type Summary = { incomeCents: number; expenseCents: number; balanceCents: number; byMonth: { month: string; type: string; amountCents: number }[] };
-const api = import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api/v1';
+const api = import.meta.env.VITE_API_URL ?? '/api/v1';
 const money = (cents: number) => new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(cents / 100);
 
 export default function App() {

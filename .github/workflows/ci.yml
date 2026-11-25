@@ -1,0 +1,96 @@
+name: CI and EC2 deployment
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    name: Backend - Jest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --include=optional
+      - run: npm run test:backend
+
+  frontend-e2e:
+    name: Frontend - Playwright
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --include=optional
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e --workspace frontend
+      - name: Stop Compose services
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          if-no-files-found: ignore
+
+  deploy-ec2:
+    name: Deploy to EC2
+    needs: [backend-tests, frontend-e2e]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_EC2_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate deployment settings
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+          EC2_JWT_SECRET: ${{ secrets.EC2_JWT_SECRET }}
+        run: |
+          test -n "$EC2_HOST"
+          test -n "$EC2_USER"
+          test -n "$EC2_SSH_PRIVATE_KEY"
+          test -n "$EC2_KNOWN_HOSTS"
+          test -n "$EC2_JWT_SECRET"
+      - name: Prepare SSH and deployment bundle
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+          EC2_JWT_SECRET: ${{ secrets.EC2_JWT_SECRET }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          printf 'JWT_SECRET=%s\n' "$EC2_JWT_SECRET" > deployment.env
+          chmod 600 deployment.env
+          tar --exclude='./.git' --exclude='./node_modules' --exclude='./frontend/node_modules' --exclude='./backend/node_modules' --exclude='./backend/data' --exclude='./deployment.env' -czf app.tar.gz .
+      - name: Copy and deploy over SSH
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_DEPLOY_PATH: ${{ vars.EC2_DEPLOY_PATH }}
+        run: |
+          DEPLOY_PATH="${EC2_DEPLOY_PATH:-/opt/proyectodevops}"
+          scp -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes app.tar.gz deployment.env "$EC2_USER@$EC2_HOST:/tmp/"
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$EC2_USER@$EC2_HOST" "mkdir -p '$DEPLOY_PATH' && tar -xzf /tmp/app.tar.gz -C '$DEPLOY_PATH' && mv /tmp/deployment.env '$DEPLOY_PATH/.env' && chmod 600 '$DEPLOY_PATH/.env' && cd '$DEPLOY_PATH' && docker compose up -d --build --remove-orphans"

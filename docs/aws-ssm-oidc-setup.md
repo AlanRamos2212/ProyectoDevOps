@@ -34,7 +34,7 @@ En IAM → Proveedores de identidad, crea el proveedor solo si aún no existe:
 
 ## 3. Rol que usará GitHub Actions
 
-Crea el rol `GitHubActionsProyectoDevOpsDeployRole` con proveedor OIDC de GitHub y audiencia `sts.amazonaws.com`. En la relación de confianza, conserva el principal federado y configura estas condiciones para restringirlo a este repositorio y a `main`:
+Crea el rol `GitHubActionsProyectoDevOpsDeployRole` con proveedor OIDC de GitHub y audiencia `sts.amazonaws.com`. GitHub usa el formato anterior de `sub` para repositorios existentes y un formato con IDs para repositorios creados desde el 15 de julio de 2026. Esta condición acepta ambos formatos, siempre restringida a este repositorio y a `main`:
 
 ```json
 {
@@ -50,8 +50,11 @@ Crea el rol `GitHubActionsProyectoDevOpsDeployRole` con proveedor OIDC de GitHub
         "StringEquals": {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
         },
-        "StringEquals": {
-          "token.actions.githubusercontent.com:sub": "repo:AlanRamos2212/ProyectoDevOps:ref:refs/heads/main"
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": [
+            "repo:AlanRamos2212/ProyectoDevOps:ref:refs/heads/main",
+            "repo:AlanRamos2212@*/ProyectoDevOps@*:ref:refs/heads/main"
+          ]
         }
       }
     }

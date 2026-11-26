@@ -17,8 +17,11 @@ COPY --from=deps /app/node_modules ./node_modules
 # Auto-instrumentación OTel para HTTP/Express y exporters OTLP.
 RUN npm install --prefix /otel --omit=dev --no-audit --no-fund @opentelemetry/auto-instrumentations-node@0.83.1
 ENV NODE_PATH=/otel/node_modules
+# Resuelve el subpath público de registro durante el build para detectar fallos de OTel
+# antes de iniciar el contenedor (los paths internos del paquete no son API pública).
+RUN node -e "require.resolve('@opentelemetry/auto-instrumentations-node/register')"
 RUN mkdir -p /data
 ENV DATABASE_PATH=/data/finance.db
 EXPOSE 3000
-CMD ["node", "--require", "/otel/node_modules/@opentelemetry/auto-instrumentations-node/register", "dist/index.js"]
+CMD ["node", "--require", "@opentelemetry/auto-instrumentations-node/register", "dist/index.js"]
 

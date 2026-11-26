@@ -1,260 +1,207 @@
-name: CI/CD Pipeline con Playwright, Jest y OpenObserve
+name: CI/CD - Jest, Playwright, EC2 y OpenObserve
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
-# Definir vars por defecto (serán sobrescritas por secrets en GitHub)
-env:
-  NODE_VERSION: 22
-  DEPLOY_EC2_ENABLED: false
-  EC2_APP_PORT: 8080
-  # Endpoint de OpenObserve - Usar secret de GitHub si está definido
-  OPENOBSERVE_ENDPOINT: https://openobserve.tu-dominio.com/api/v1/events
-  # Variable para status de despliegue
-  DEPLOY_STATUS: skipped
+permissions:
+  contents: read
 
 jobs:
-  # Trabajo de pruebas (Jest + Playwright)
-  test:
-    name: Ejecutar Suite de Pruebas (Jest + Playwright)
+  backend-tests:
+    name: Backend - Jest
     runs-on: ubuntu-latest
-    outputs:
-      test-result: ${{ job.test-result }}
-      commit-sha: ${{ github.sha }}
-      commit-ref: ${{ github.ref }}
-      executor: ${{ github.actor }}
-
     steps:
-      # 1. Checkout del código
-      - name: 📂 Checkout del código
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # 2. Configurar Node.js
-      - name: 🟢 Configurar Node.js ${{ env.NODE_VERSION }}
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: 22
           cache: npm
+          cache-dependency-path: package-lock.json
 
-      # 3. Instalar dependencias
-      - name: 📦 Instalar dependencias
+      - name: Install dependencies
         run: npm ci --include=optional
 
-      # 4. Ejecutar pruebas unitarias con Jest (Backend)
-      - name: 🧪 Ejecutar pruebas unitarias Jest (Backend)
-        id: jest-tests
+      - name: Run Jest suite
         run: npm run test:backend
-        env:
-          CI: true
-          DATABASE_PATH: ':memory:'
 
-      # 5. Ejecutar pruebas e2e con Playwright (Frontend + Backend)
-      - name: 🎮 Ejecutar pruebas e2e Playwright
-        id: playwright-tests
-        run: npx playwright test --workspace frontend
-        env:
-          CI: true
-          BASE_URL: http://127.0.0.1:8080
-          PLAYWRIGHT_REPORT_DIR: ./frontend/playwright-report
-
-      # 6. Determinar si todas las pruebas pasaron
-      - name: 📊 Consolidar estado de pruebas
-        id: test-summary
-        run: |
-          JEST_EXIT_CODE=${{ steps.jest-tests.outcome == 'success' && '0' || '1' }}
-          PLAYWRIGHT_EXIT_CODE=${{ steps.playwright-tests.outcome == 'success' && '0' || '1' }}
-          
-          echo "Jest exit code: $JEST_EXIT_CODE"
-          echo "Playwright exit code: $PLAYWRIGHT_EXIT_CODE"
-          
-          if [ "$JEST_EXIT_CODE" = "0" ] && [ "$PLAYWRIGHT_EXIT_CODE" = "0" ]; then
-            echo "test-result=success" >> $GITHUB_OUTPUT
-            echo "🟢 Todas las pruebas pasaron"
-          else
-            echo "test-result=failure" >> $GITHUB_OUTPUT
-            echo "🔴 Algunas pruebas fallaron"
-          fi
-          
-          TEST_SUMMARY="{\"commit\":\"${{ github.sha }}\",\"branch\":\"${{ github.ref }}\",\"user\":\"${{ github.actor }}\",\"jest-results\":${JEST_EXIT_CODE},\"playwright-results\":${PLAYWRIGHT_EXIT_CODE},\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
-          echo "test-summary-json=$TEST_SUMMARY" >> $GITHUB_OUTPUT
-
-      # 7. Enviar resultados de pruebas a OpenObserve (RF-03)
-      - name: 📡 Enviar resultados a OpenObserve (RF-03)
-        if: always()
-        env:
-          OPENOBSERVE_ENDPOINT: ${{ secrets.OPENOBSERVE_ENDPOINT || env.OPENOBSERVE_ENDPOINT }}
-        run: |
-          SUMMARY="${{ steps.test-summary.outputs.test-summary-json }}"
-          echo "Enviando resumen de pruebas a OpenObserve..."
-          echo "$SUMMARY"
-          # POST al endpoint de OpenObserve via API HTTP/JSON
-          curl -s -X POST "$OPENOBSERVE_ENDPOINT/pruebas" \
-            -H "Content-Type: application/json" \
-            -d "$SUMMARY" \
-            || echo "⚠ No se pudo conectar con OpenObserve en esta etapa"
-
-      # 8. Bloquear despliegue si las pruebas fallan (RF-02)
-      - name: 🚫 Bloquear despliegue por fallo de pruebas
-        if: steps.test-summary.outputs.test-result == 'failure'
-        run: |
-          echo "❌ FALLOS DETECTADOS en la suite de pruebas"
-          echo "🚫 Bloqueando conexión SSH y despliegue hacia EC2"
-          echo "📡 Incident registrado en OpenObserve"
-          echo "DEPLOY_BLOCKED=true" >> $GITHUB_ENV
-          # Establecer status de despliegue como failed
-          echo "DEPLOY_STATUS=failed" >> $GITHUB_ENV
-
-      # 9. Establecer status exitoso si pasan pruebas
-      - name: ✅ Establecer status exitoso
-        if: steps.test-summary.outputs.test-result == 'success'
-        run: |
-          echo "DEPLOY_STATUS=success" >> $GITHUB_ENV
-
-  # Trabajo de despliegue condicionado
-  deploy:
-    name: Despliegue Condicionado a EC2
-    needs: test
+  frontend-e2e:
+    name: Frontend - Playwright
     runs-on: ubuntu-latest
-    if: needs.test.outputs.test-result == 'success' && env.DEPLOY_EC2_ENABLED == 'true'
-    outputs:
-      deploy-status: ${{ env.DEPLOY_STATUS }}
-
+    timeout-minutes: 60
     steps:
-      # 1. Checkout del código
-      - name: 📂 Checkout del código
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Configurar Node.js
-      - name: 🟢 Configurar Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: 22
           cache: npm
+          cache-dependency-path: package-lock.json
 
-      # 3. Instalar dependencias
-      - name: 📦 Instalar dependencias
+      - name: Install dependencies
         run: npm ci --include=optional
 
-      # 4. Construir aplicaciones
-      - name: 🔨 Construir Backend y Frontend
-        run: |
-          npm run build -w backend
-          npm run build -w frontend
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
 
-      # 5. Desplegar a EC2 via SSH y Docker Compose
-      - name: 🚢 Desplegar a EC2
-        if: env.DEPLOY_BLOCKED != 'true'
+      - name: Run Playwright suite
+        run: npm run test:e2e --workspace frontend
         env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
-          EC2_JWT_SECRET: ${{ secrets.EC2_JWT_SECRET }}
-          EC2_DEPLOY_PATH: ${{ env.EC2_DEPLOY_PATH || '/opt/proyectodevops' }}
-        run: |
-          echo "🔑 Configurando SSH..."
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          
-          echo "$EC2_SSH_PRIVATE_KEY" | tr -d '\r' > deploy_key.pem
-          chmod 600 deploy_key.pem
-          
-          echo "📤 Subiendo cambios y desplegando..."
-          
-          rsync -avz -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=yes" \
-            ./backend/dist/ ./frontend/dist/ ./docker-compose.yml \
-            ${EC2_USER}@${EC2_HOST}:${EC2_DEPLOY_PATH}/
-          
-          ssh -i deploy_key.pem -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} << 'EOF'
-            cd ${EC2_DEPLOY_PATH}
-            echo "🐳 Deteniendo contenedores anteriores..."
-            docker compose down || true
-            echo "🐳 Levantando nuevos contenedores..."
-            docker compose up -d --build
-            echo "✅ Despliegue completado en EC2"
-            EOF
+          CI: true
 
-      # 6. Registrar evento de despliegue en OpenObserve (RF-03)
-      - name: 📡 Registrar despliegue en OpenObserve (RF-03)
-        if: env.DEPLOY_BLOCKED != 'true'
-        env:
-          OPENOBSERVE_ENDPOINT: ${{ secrets.OPENOBSERVE_ENDPOINT || env.OPENOBSERVE_ENDPOINT }}
-        run: |
-          DEPLOY_EVENT="{\"commit\":\"${{ github.sha }}\",\"branch\":\"${{ github.ref }}\",\"user\":\"${{ github.actor }}\",\"environment\":\"ec2\",\"status\":\"success\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
-          echo "Registrando evento de despliegue en OpenObserve..."
-          curl -s -X POST "$OPENOBSERVE_ENDPOINT/despliegue" \
-            -H "Content-Type: application/json" \
-            -d "$DEPLOY_EVENT" \
-            || echo "⚠ No se pudo registrar el evento de despliegue"
-
-      # 7. Probar conexión SSH exitosa (Criterio de aceptación #1)
-      - name: 🔗 Verificar conectividad SSH exitosa
-        if: env.DEPLOY_BLOCKED != 'true'
-        run: |
-          echo "✅ Conexión SSH exitosa verificada con EC2"
-          ssh -i deploy_key.pem -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Conexión SSH exitosa'"
-
-      # 8. Establecer status de despliegue exitoso
-      - name: ✅ Establecer status de despliegue
-        if: env.DEPLOY_BLOCKED != 'true'
-        run: |
-          echo "DEPLOY_STATUS=success" >> $GITHUB_ENV
-
-  # Trabajo de notificaciones finales
-  notify:
-    name: Notificaciones y Trazabilidad
-    needs: [test, deploy]
-    runs-on: ubuntu-latest
-    if: always()
-
-    steps:
-      - name: 📡 Enviar reporte final a OpenObserve (RF-03)
+      - name: Stop Compose services
         if: always()
-        env:
-          OPENOBSERVE_ENDPOINT: ${{ secrets.OPENOBSERVE_ENDPOINT || env.OPENOBSERVE_ENDPOINT }}
-          # Usar env.DEPLOY_STATUS en lugar de needs.deploy.outputs
-          DEPLOY_STATUS: ${{ env.DEPLOY_STATUS }}
-        run: |
-          FINAL_REPORT="{\"pipeline-status\":\"${{ needs.test.outputs.test-result || 'unknown }}\",\"deploy-status\":\"${DEPLOY_STATUS}\",\"commit\":\"${{ github.sha }}\",\"branch\":\"${{ github.ref }}\",\"user\":\"${{ github.actor }}\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
-          echo "Enviando reporte a OpenObserve..."
-          echo "Final report: $FINAL_REPORT"
-          curl -s -X POST "$OPENOBSERVE_ENDPOINT/reporte-final" \
-            -H "Content-Type: application/json" \
-            -d "$FINAL_REPORT" \
-            || echo "⚠ No se pudo enviar el reporte final"
+        run: docker compose down --volumes --remove-orphans
 
-      - name: 📊 Generar y subir reporte de Playwright
+      - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
-          path: frontend/playwright-report/
+          name: playwright-report-${{ github.run_number }}
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          if-no-files-found: ignore
           retention-days: 30
 
-      - name: 📧 Comentario en Pull Request
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const result = '${{ needs.test.outputs.test-result }}';
-            const issueNumber = context.payload.pull_request ? context.payload.pull_request.number : null;
-            if (issueNumber && result === 'failure') {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-                body: `❌ **Pipeline CI/CD falló** - Las pruebas automatizadas no pasaron. Revisa los logs para más detalles.`
-              });
-            } else if (issueNumber && result === 'success') {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-                body: `✅ **Pipeline CI/CD exitoso** - Todas las pruebas pasaron y el despliegue está condicionado.`
-              });
-            }
+  deploy-ec2:
+    name: Deploy to EC2
+    needs: [backend-tests, frontend-e2e]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_EC2_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate deployment settings and prepare SSH
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USERNAME }}
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+          EC2_JWT_SECRET: ${{ secrets.EC2_JWT_SECRET }}
+        run: |
+          set -euo pipefail
+          : "${EC2_HOST:?Missing secret EC2_HOST}"
+          : "${EC2_USER:?Missing secret EC2_USERNAME}"
+          : "${EC2_SSH_PRIVATE_KEY:?Missing secret EC2_SSH_PRIVATE_KEY}"
+          : "${EC2_KNOWN_HOSTS:?Missing secret EC2_KNOWN_HOSTS}"
+          : "${EC2_JWT_SECRET:?Missing secret EC2_JWT_SECRET}"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+
+      - name: Package and deploy application
+        id: deploy
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USERNAME }}
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+          EC2_JWT_SECRET: ${{ secrets.EC2_JWT_SECRET }}
+          EC2_DEPLOY_PATH: ${{ vars.EC2_DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          DEPLOY_PATH="${EC2_DEPLOY_PATH:-/opt/proyectodevops}"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          tar \
+            --exclude='./.git' \
+            --exclude='./node_modules' \
+            --exclude='./backend/node_modules' \
+            --exclude='./frontend/node_modules' \
+            --exclude='./backend/data' \
+            --exclude='./frontend/playwright-report' \
+            --exclude='./frontend/test-results' \
+            --exclude='./Evidencias' \
+            --exclude='./.env' \
+            -czf app.tar.gz .
+          printf 'JWT_SECRET=%s\n' "$EC2_JWT_SECRET" > deployment.env
+          chmod 600 deployment.env
+          scp -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            app.tar.gz deployment.env "$EC2_USER@$EC2_HOST:/tmp/"
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$EC2_USER@$EC2_HOST" \
+            "mkdir -p '$DEPLOY_PATH' && \
+             tar -xzf /tmp/app.tar.gz -C '$DEPLOY_PATH' && \
+             mv /tmp/deployment.env '$DEPLOY_PATH/.env' && \
+             chmod 600 '$DEPLOY_PATH/.env' && \
+             cd '$DEPLOY_PATH' && \
+             docker compose up -d --build --remove-orphans"
+
+  openobserve-events:
+    name: Send CI/CD events to OpenObserve
+    needs: [backend-tests, frontend-e2e, deploy-ec2]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send pipeline and deployment events
+        env:
+          OPENOBSERVE_URL: ${{ vars.OPENOBSERVE_URL || 'https://api.openobserve.ai' }}
+          OPENOBSERVE_ORG: ${{ vars.OPENOBSERVE_ORG }}
+          OPENOBSERVE_STREAM: ${{ vars.OPENOBSERVE_STREAM_CI || 'ci_pipeline' }}
+          OPENOBSERVE_AUTHORIZATION: ${{ secrets.OPENOBSERVE_AUTHORIZATION }}
+          BACKEND_RESULT: ${{ needs.backend-tests.result }}
+          PLAYWRIGHT_RESULT: ${{ needs.frontend-e2e.result }}
+          DEPLOY_RESULT: ${{ needs.deploy-ec2.result }}
+          COMMIT_SHA: ${{ github.sha }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          EXECUTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [ -z "$OPENOBSERVE_ORG" ] || [ -z "$OPENOBSERVE_AUTHORIZATION" ]; then
+            echo "OpenObserve no está configurado: define OPENOBSERVE_ORG y OPENOBSERVE_AUTHORIZATION."
+            exit 0
+          fi
+
+          OPENOBSERVE_URL="${OPENOBSERVE_URL%/}"
+          INGEST_URL="$OPENOBSERVE_URL/api/$OPENOBSERVE_ORG/$OPENOBSERVE_STREAM/_json"
+          PIPELINE_STATUS="success"
+          if [ "$BACKEND_RESULT" != "success" ] || [ "$PLAYWRIGHT_RESULT" != "success" ]; then
+            PIPELINE_STATUS="failure"
+          fi
+
+          PIPELINE_EVENT="$(jq -cn \
+            --arg event_type "pipeline_run" \
+            --arg pipeline_status "$PIPELINE_STATUS" \
+            --arg backend_result "$BACKEND_RESULT" \
+            --arg playwright_result "$PLAYWRIGHT_RESULT" \
+            --arg deployment_result "$DEPLOY_RESULT" \
+            --arg commit "$COMMIT_SHA" \
+            --arg branch "$BRANCH_NAME" \
+            --arg user "$EXECUTOR" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{event_type:$event_type,pipeline_status:$pipeline_status,backend_result:$backend_result,playwright_result:$playwright_result,deployment_result:$deployment_result,commit:$commit,branch:$branch,user:$user,timestamp:$timestamp}')"
+          curl --fail-with-body --silent --show-error \
+            -H "Authorization: $OPENOBSERVE_AUTHORIZATION" \
+            -H "Content-Type: application/json" \
+            --data "[$PIPELINE_EVENT]" \
+            "$INGEST_URL"
+
+          if [ "$DEPLOY_RESULT" != "skipped" ]; then
+            DEPLOY_EVENT="$(jq -cn \
+              --arg event_type "deployment" \
+              --arg status "$DEPLOY_RESULT" \
+              --arg commit "$COMMIT_SHA" \
+              --arg branch "$BRANCH_NAME" \
+              --arg user "$EXECUTOR" \
+              --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '{event_type:$event_type,status:$status,environment:"ec2",commit:$commit,branch:$branch,user:$user,timestamp:$timestamp}')"
+            curl --fail-with-body --silent --show-error \
+              -H "Authorization: $OPENOBSERVE_AUTHORIZATION" \
+              -H "Content-Type: application/json" \
+              --data "[$DEPLOY_EVENT]" \
+              "$INGEST_URL"
+          fi

@@ -1,0 +1,9 @@
+# ec2-3-143-147-147.us-east-2.compute.amazonaws.com:22 SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.8
+# ec2-3-143-147-147.us-east-2.compute.amazonaws.com:22 SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.8
+choose_kex: unsupported KEX method sntrup761x25519-sha512@openssh.com
+# ec2-3-143-147-147.us-east-2.compute.amazonaws.com:22 SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.8
+choose_kex: unsupported KEX method sntrup761x25519-sha512@openssh.com
+# ec2-3-143-147-147.us-east-2.compute.amazonaws.com:22 SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.8
+choose_kex: unsupported KEX method sntrup761x25519-sha512@openssh.com
+# ec2-3-143-147-147.us-east-2.compute.amazonaws.com:22 SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.8
+choose_kex: unsupported KEX method sntrup761x25519-sha512@openssh.com

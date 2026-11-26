@@ -52,7 +52,7 @@ async function signInWithTransactions(page: Page, initial: Transaction[] = []) {
   return requests;
 }
 
-test('creates an expense and updates the activity list', async ({ page }) => {
+test('saves a 123.45 MXN expense as 12345 cents and shows it in the activity list', async ({ page }) => {
   const requests = await signInWithTransactions(page);
   await page.getByRole('button', { name: 'Nuevo movimiento' }).click();
   await page.getByLabel('Monto (MXN)').fill('123.45');
@@ -63,7 +63,7 @@ test('creates an expense and updates the activity list', async ({ page }) => {
   expect(requests.find(request => request.method === 'POST')?.body.amountCents).toBe(12345);
 });
 
-test('creates an income with the selected type', async ({ page }) => {
+test('saves a 2500 MXN salary as income and shows it in the activity list', async ({ page }) => {
   const requests = await signInWithTransactions(page);
   await page.getByRole('button', { name: 'Nuevo movimiento' }).click();
   await page.getByLabel('Tipo').selectOption('income');
@@ -76,7 +76,7 @@ test('creates an income with the selected type', async ({ page }) => {
   expect(requests.find(request => request.method === 'POST')?.body.type).toBe('income');
 });
 
-test('filters the activity list by transaction type', async ({ page }) => {
+test('shows only income or expense rows after changing the activity type filter', async ({ page }) => {
   await signInWithTransactions(page, [
     { id: 1, type: 'income', amountCents: 10000, category: 'Sueldo', description: 'Ingreso visible', date: '2026-11-01' },
     { id: 2, type: 'expense', amountCents: 2500, category: 'Transporte', description: 'Gasto oculto', date: '2026-11-02' }
@@ -90,7 +90,7 @@ test('filters the activity list by transaction type', async ({ page }) => {
   await expect(page.getByText('Ingreso visible')).toHaveCount(0);
 });
 
-test('deletes a transaction from the activity list', async ({ page }) => {
+test('sends a delete request and removes the selected expense from the activity list', async ({ page }) => {
   const requests = await signInWithTransactions(page, [
     { id: 9, type: 'expense', amountCents: 750, category: 'Otros', description: 'Eliminarme', date: '2026-11-03' }
   ]);

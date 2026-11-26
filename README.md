@@ -20,6 +20,27 @@ Frontend: <http://localhost:5173> · API: <http://localhost:3000/health>
 
 El usuario inicial es `demo@finanzas.local` / `Demo123!`. Cambia estas credenciales antes de exponer el servidor fuera del entorno de clase.
 
+## Estructura del proyecto
+
+El repositorio usa npm workspaces: `frontend` y `backend` se construyen y prueban por separado, y la raíz mantiene los comandos comunes y Docker Compose.
+
+```text
+backend/src/
+  config/          Configuración compartida
+  controllers/     Lógica de los endpoints
+  database/        Conexión y preparación de SQLite
+  middleware/      Autenticación y validación de rutas
+  routes/          Rutas agrupadas por funcionalidad
+  validators/      Esquemas de entrada
+frontend/src/
+  app/             Composición principal de la aplicación
+  features/        Pantallas y componentes por funcionalidad
+  shared/          Cliente API y utilidades compartidas
+  types/           Tipos comunes del frontend
+```
+
+Los archivos de entrada (`backend/src/index.ts`, `backend/src/app.ts` y `frontend/src/main.tsx`) permanecen en sus ubicaciones para conservar scripts, pruebas y configuración Docker.
+
 ## Docker
 
 ```powershell

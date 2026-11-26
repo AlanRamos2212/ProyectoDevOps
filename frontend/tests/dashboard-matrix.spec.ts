@@ -23,11 +23,9 @@ test.describe('Dashboard balance data matrix', () => {
       async ({ page }) => {
         const balanceCents = summary.incomeCents - summary.expenseCents;
 
-        await page.route('**/api/v1/auth/login', route => route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ token: 'playwright-test-token', user: { id: 1, email: 'demo@finanzas.local' } })
-        }));
+        // El flujo de login se cubre en dashboard.spec.ts. Esta matriz valida
+        // el balance y evita repetir 665 clics de autenticación innecesarios.
+        await page.addInitScript(() => localStorage.setItem('token', 'playwright-test-token'));
         await page.route('**/api/v1/transactions**', route => route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -48,7 +46,6 @@ test.describe('Dashboard balance data matrix', () => {
         }));
 
         await page.goto('/');
-        await page.getByRole('button', { name: 'Iniciar sesión' }).click();
         await expect(page.locator('.stat-card.balance strong')).toHaveText(formatMoney(balanceCents));
       }
     );

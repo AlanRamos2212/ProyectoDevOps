@@ -71,20 +71,14 @@ La suite objetivo tiene 570 casos Jest y 670 casos Playwright. Las pruebas E2E l
 
 El workflow `.github/workflows/ci.yml` ejecuta Jest y Playwright en cada push a `main` y en pull requests. El despliegue solo se habilita en pushes a `main`, después de que ambos trabajos pasen, y cuando la variable del repositorio `DEPLOY_EC2_ENABLED` esté definida como `true`.
 
-Configura estos secretos en GitHub antes de habilitar el despliegue:
+La configuración paso a paso de IAM, SSM, OIDC y GitHub está en [docs/aws-ssm-oidc-setup.md](docs/aws-ssm-oidc-setup.md).
 
-- `EC2_HOST`: DNS público o IP de la instancia.
-- `EC2_USERNAME`: usuario SSH, por ejemplo `ubuntu`.
-- `EC2_SSH_PRIVATE_KEY`: llave privada para conectarse a EC2.
-- `EC2_KNOWN_HOSTS`: clave de host verificada de la instancia.
-- `EC2_JWT_SECRET`: secreto aleatorio para firmar sesiones.
-- `OPENOBSERVE_AUTHORIZATION`: encabezado Basic del token de ingestión de OpenObserve.
+El deploy usa GitHub OIDC y AWS Systems Manager Run Command, sin llaves SSH ni acceso SSH desde los runners hospedados. Para configurarlo:
 
-Configura también estas variables del repositorio:
+1. Registra `https://token.actions.githubusercontent.com` como proveedor OIDC en IAM, con audiencia `sts.amazonaws.com`.
+2. Crea un rol `GitHubActionsProyectoDevOpsDeployRole` cuya relación de confianza permita únicamente `repo:AlanRamos2212/ProyectoDevOps:ref:refs/heads/main`. Adjunta permisos para `ssm:SendCommand` al documento `AWS-RunShellScript` y a la instancia, `ssm:GetCommandInvocation`, y `ssm:PutParameter` dentro de `/proyectodevops/prod/*`.
+3. Al rol de instancia `ProyectoDevOpsSSMInstanceRole`, además de `AmazonSSMManagedInstanceCore`, adjunta permiso `ssm:GetParameter` para `/proyectodevops/prod/*`.
+4. En GitHub Actions secrets configura `EC2_JWT_SECRET` y `OPENOBSERVE_AUTHORIZATION` (encabezado Basic del token de ingestión).
+5. En GitHub Actions variables configura `AWS_DEPLOY_ROLE_ARN`, `EC2_INSTANCE_ID`, `OPENOBSERVE_ORG` y `DEPLOY_EC2_ENABLED=true`. `AWS_REGION` del workflow es `us-east-2`; `OPENOBSERVE_URL` puede omitirse para usar `https://api.openobserve.ai`.
 
-- `OPENOBSERVE_ORG`: ID de organización.
-- `OPENOBSERVE_URL`: por defecto `https://api.openobserve.ai`.
-- `DEPLOY_EC2_ENABLED`: debe ser `true` para habilitar el deploy condicionado a ambas suites.
-- `EC2_DEPLOY_PATH`: opcional; por defecto `/opt/proyectodevops`.
-
-EC2 necesita Docker Engine y Docker Compose. La interfaz queda publicada en el puerto 8080. El deploy SSH solo funcionará si la instancia acepta conexiones desde el runner de GitHub; limitar SSH a la IP de casa permite Instance Connect desde el navegador, pero no al runner hospedado de GitHub. No abras SSH a `0.0.0.0/0`; para CI/CD automatizado conviene integrar AWS Systems Manager.
+El workflow cifra los secretos como `SecureString` en Parameter Store y la instancia los recupera al desplegar. La primera ejecución instala Git, AWS CLI, Docker Engine y Compose si faltan. La interfaz queda publicada en el puerto 8080. Mantén el puerto SSH limitado a tu IP; GitHub Actions se conecta a la instancia por Systems Manager.

@@ -69,7 +69,7 @@ La suite objetivo tiene 570 casos Jest y 670 casos Playwright. Las pruebas E2E l
 
 ## GitHub Actions y EC2
 
-El workflow `.github/workflows/ci.yml` ejecuta Jest y Playwright en cada push a `main` y en pull requests. El despliegue solo se habilita en pushes a `main`, después de que ambos trabajos pasen, y cuando la variable del repositorio `DEPLOY_EC2_ENABLED` esté definida como `true`.
+El workflow `.github/workflows/ci.yml` ejecuta Jest y Playwright en cada push a `main` y en pull requests. El despliegue solo se habilita en `main`, después de que ambos trabajos pasen, y cuando la variable del repositorio `DEPLOY_EC2_ENABLED` esté definida como `true`. También puede iniciarse manualmente desde Actions en la rama `main`.
 
 La configuración paso a paso de IAM, SSM, OIDC y GitHub está en [docs/aws-ssm-oidc-setup.md](docs/aws-ssm-oidc-setup.md).
 

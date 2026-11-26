@@ -88,6 +88,9 @@ jobs:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
           EC2_JWT_SECRET: ${{ secrets.EC2_JWT_SECRET }}
+          OPENOBSERVE_URL: ${{ vars.OPENOBSERVE_URL || 'https://api.openobserve.ai' }}
+          OPENOBSERVE_ORG: ${{ vars.OPENOBSERVE_ORG }}
+          OPENOBSERVE_AUTHORIZATION: ${{ secrets.OPENOBSERVE_AUTHORIZATION }}
         run: |
           set -euo pipefail
           : "${EC2_HOST:?Missing secret EC2_HOST}"
@@ -95,6 +98,8 @@ jobs:
           : "${EC2_SSH_PRIVATE_KEY:?Missing secret EC2_SSH_PRIVATE_KEY}"
           : "${EC2_KNOWN_HOSTS:?Missing secret EC2_KNOWN_HOSTS}"
           : "${EC2_JWT_SECRET:?Missing secret EC2_JWT_SECRET}"
+          : "${OPENOBSERVE_ORG:?Missing variable OPENOBSERVE_ORG}"
+          : "${OPENOBSERVE_AUTHORIZATION:?Missing secret OPENOBSERVE_AUTHORIZATION}"
           install -m 700 -d ~/.ssh
           printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
@@ -110,6 +115,9 @@ jobs:
           EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
           EC2_JWT_SECRET: ${{ secrets.EC2_JWT_SECRET }}
           EC2_DEPLOY_PATH: ${{ vars.EC2_DEPLOY_PATH }}
+          OPENOBSERVE_URL: ${{ vars.OPENOBSERVE_URL || 'https://api.openobserve.ai' }}
+          OPENOBSERVE_ORG: ${{ vars.OPENOBSERVE_ORG }}
+          OPENOBSERVE_AUTHORIZATION: ${{ secrets.OPENOBSERVE_AUTHORIZATION }}
         run: |
           set -euo pipefail
           DEPLOY_PATH="${EC2_DEPLOY_PATH:-/opt/proyectodevops}"
@@ -128,7 +136,16 @@ jobs:
             --exclude='./Evidencias' \
             --exclude='./.env' \
             -czf app.tar.gz .
-          printf 'JWT_SECRET=%s\n' "$EC2_JWT_SECRET" > deployment.env
+          OTEL_AUTH_HEADER="${OPENOBSERVE_AUTHORIZATION/ /%20}"
+          {
+            printf 'JWT_SECRET=%s\n' "$EC2_JWT_SECRET"
+            printf 'OTEL_TRACES_EXPORTER=otlp\n'
+            printf 'OTEL_METRICS_EXPORTER=otlp\n'
+            printf 'OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\n'
+            printf 'OTEL_EXPORTER_OTLP_ENDPOINT=%s/api/%s\n' "${OPENOBSERVE_URL%/}" "$OPENOBSERVE_ORG"
+            printf 'OTEL_EXPORTER_OTLP_HEADERS=%s\n' "Authorization=$OTEL_AUTH_HEADER"
+            printf 'OTEL_RESOURCE_ATTRIBUTES=deployment.environment=ec2,service.namespace=proyecto-devops\n'
+          } > deployment.env
           chmod 600 deployment.env
           scp -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             app.tar.gz deployment.env "$EC2_USER@$EC2_HOST:/tmp/"

@@ -51,6 +51,12 @@ UI: <http://localhost:8080> · API de salud: <http://localhost:3000/health>
 
 Nginx reenvía las rutas `/api/` al backend. SQLite persiste en el volumen `finance_data`.
 
+### OpenTelemetry y OpenObserve
+
+El contenedor del backend precarga la auto-instrumentación de OpenTelemetry. Envía trazas HTTP/Express, spans de consultas SQLite, y métricas de conteo y duración por método, ruta y código HTTP mediante OTLP/HTTP. Los logs JSON del backend salen por `journald` junto con los logs de los contenedores, para que el agente de OpenObserve los recoja.
+
+En despliegues, el workflow toma `OPENOBSERVE_URL` y `OPENOBSERVE_ORG` de las variables del repositorio, y `OPENOBSERVE_AUTHORIZATION` de un secreto. El endpoint OTLP se construye como `/api/<org>` y el stream por defecto de OpenObserve recibe los datos.
+
 ## Pruebas
 
 ```powershell
@@ -68,11 +74,17 @@ El workflow `.github/workflows/ci.yml` ejecuta Jest y Playwright en cada push a 
 Configura estos secretos en GitHub antes de habilitar el despliegue:
 
 - `EC2_HOST`: DNS público o IP de la instancia.
-- `EC2_USER`: usuario SSH.
+- `EC2_USERNAME`: usuario SSH, por ejemplo `ubuntu`.
 - `EC2_SSH_PRIVATE_KEY`: llave privada para conectarse a EC2.
 - `EC2_KNOWN_HOSTS`: clave de host verificada de la instancia.
 - `EC2_JWT_SECRET`: secreto aleatorio para firmar sesiones.
+- `OPENOBSERVE_AUTHORIZATION`: encabezado Basic del token de ingestión de OpenObserve.
 
-El nombre de usuario SSH esperado por el workflow es `EC2_USERNAME`.
+Configura también estas variables del repositorio:
 
-Variable opcional: `EC2_DEPLOY_PATH` (por defecto `/opt/proyectodevops`). EC2 necesita Docker Engine, Docker Compose y acceso SSH desde GitHub Actions. La interfaz queda publicada en el puerto 8080.
+- `OPENOBSERVE_ORG`: ID de organización.
+- `OPENOBSERVE_URL`: por defecto `https://api.openobserve.ai`.
+- `DEPLOY_EC2_ENABLED`: debe ser `true` para habilitar el deploy condicionado a ambas suites.
+- `EC2_DEPLOY_PATH`: opcional; por defecto `/opt/proyectodevops`.
+
+EC2 necesita Docker Engine y Docker Compose. La interfaz queda publicada en el puerto 8080. El deploy SSH solo funcionará si la instancia acepta conexiones desde el runner de GitHub; limitar SSH a la IP de casa permite Instance Connect desde el navegador, pero no al runner hospedado de GitHub. No abras SSH a `0.0.0.0/0`; para CI/CD automatizado conviene integrar AWS Systems Manager.

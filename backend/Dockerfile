@@ -14,8 +14,11 @@ ENV NODE_ENV=production
 COPY --from=build /app/backend/package.json ./package.json
 COPY --from=build /app/backend/dist ./dist
 COPY --from=deps /app/node_modules ./node_modules
+# Auto-instrumentación OTel para HTTP/Express y exporters OTLP.
+RUN npm install --prefix /otel --omit=dev --no-audit --no-fund @opentelemetry/auto-instrumentations-node@0.83.1
+ENV NODE_PATH=/otel/node_modules
 RUN mkdir -p /data
 ENV DATABASE_PATH=/data/finance.db
 EXPOSE 3000
-CMD ["node", "dist/index.js"]
+CMD ["node", "--require", "/otel/node_modules/@opentelemetry/auto-instrumentations-node/register", "dist/index.js"]
 

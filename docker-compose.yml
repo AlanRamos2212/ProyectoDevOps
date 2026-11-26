@@ -8,6 +8,13 @@ services:
       PORT: 3000
       JWT_SECRET: ${JWT_SECRET:-local-dev-secret-change-me}
       DATABASE_PATH: /data/finance.db
+      OTEL_SERVICE_NAME: finance-backend
+      OTEL_TRACES_EXPORTER: ${OTEL_TRACES_EXPORTER:-none}
+      OTEL_METRICS_EXPORTER: ${OTEL_METRICS_EXPORTER:-none}
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-deployment.environment=local,service.namespace=proyecto-devops}
     volumes:
       - finance_data:/data
     healthcheck:
@@ -16,6 +23,8 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+    logging:
+      driver: journald
   frontend:
     build:
       context: .
@@ -24,5 +33,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    logging:
+      driver: journald
 volumes:
   finance_data:

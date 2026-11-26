@@ -38,7 +38,7 @@ npx playwright install chromium
 npm.cmd run test:e2e --workspace frontend
 ```
 
-Las pruebas E2E levantan los servicios con Docker Compose.
+La suite objetivo tiene 570 casos Jest y 670 casos Playwright. Las pruebas E2E levantan los servicios con Docker Compose, corren con 3 workers y generan el reporte HTML en `frontend/playwright-report/`. GitHub Actions publica el reporte como artifact descargable por 30 días.
 
 ## GitHub Actions y EC2
 
@@ -51,5 +51,7 @@ Configura estos secretos en GitHub antes de habilitar el despliegue:
 - `EC2_SSH_PRIVATE_KEY`: llave privada para conectarse a EC2.
 - `EC2_KNOWN_HOSTS`: clave de host verificada de la instancia.
 - `EC2_JWT_SECRET`: secreto aleatorio para firmar sesiones.
+
+El nombre de usuario SSH esperado por el workflow es `EC2_USERNAME`.
 
 Variable opcional: `EC2_DEPLOY_PATH` (por defecto `/opt/proyectodevops`). EC2 necesita Docker Engine, Docker Compose y acceso SSH desde GitHub Actions. La interfaz queda publicada en el puerto 8080.

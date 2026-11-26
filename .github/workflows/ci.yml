@@ -27,7 +27,7 @@ jobs:
   frontend-e2e:
     name: Frontend - Playwright
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -42,14 +42,15 @@ jobs:
         if: always()
         run: docker compose down --volumes --remove-orphans
       - name: Upload Playwright report
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-${{ github.run_number }}
           path: |
             frontend/playwright-report/
             frontend/test-results/
           if-no-files-found: ignore
+          retention-days: 30
 
   deploy-ec2:
     name: Deploy to EC2
@@ -61,7 +62,7 @@ jobs:
       - name: Validate deployment settings
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_USER: ${{ secrets.EC2_USERNAME }}
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
           EC2_JWT_SECRET: ${{ secrets.EC2_JWT_SECRET }}
@@ -88,7 +89,7 @@ jobs:
       - name: Copy and deploy over SSH
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_USER: ${{ secrets.EC2_USERNAME }}
           EC2_DEPLOY_PATH: ${{ vars.EC2_DEPLOY_PATH }}
         run: |
           DEPLOY_PATH="${EC2_DEPLOY_PATH:-/opt/proyectodevops}"

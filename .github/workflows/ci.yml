@@ -23,9 +23,9 @@ jobs:
       - name: Install dependencies
         run: npm ci --include=optional
       - name: Probar backend (Jest)
-        run: npx jest --testPathPattern="backend/test" --verbose 2>&1 || echo "Jest tests had issues but continuing"
+        run: npx jest --testPathPattern="backend/test" --verbose 2>&1 || echo "Tests had issues"
       - name: Probar frontend E2E (Playwright)
-        run: npx playwright test 2>&1 || echo "Playwright tests had issues but continuing"
+        run: npx playwright test 2>&1 || echo "Playwright tests had issues"
 
   deploy:
     name: Desplegar a EC2
@@ -39,6 +39,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Install dependencies
+        run: npm ci --include=optional
       - name: Build
         run: npm run build -w backend && npm run build -w frontend
       - name: Deploy SSH
@@ -73,4 +75,4 @@ jobs:
           curl -s -X POST "\${OPENOBSERVE_ENDPOINT}/reporte-final" \
             -H "Content-Type: application/json" \
             -d "{\"pipeline\":\"ci-cd\",\"status\":\"${{ job.status }}\",\"test\":\"completed\"}" \
-            || echo "No conectado OpenObserve"
+            || echo "No conectado"

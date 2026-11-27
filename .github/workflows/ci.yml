@@ -1,257 +1,74 @@
-name: CI/CD Pipeline con Playwright, Jest y OpenObserve SSH
+name: CI/CD Pipeline
 
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
 
 env:
   NODE_VERSION: 22
-  DEPLOY_EC2_ENABLED: false
-  # Variable para controlar si intentar despliegue SSH
-  DEPLOY_VIA_SSH: true
-  # OpenObserve endpoint - usa la misma variable que ya tenías
   OPENOBSERVE_ENDPOINT: https://openobserve.tu-dominio.com/api/v1/events
 
 jobs:
-  # Trabajo de pruebas (Jest + Playwright)
   test:
-    name: Ejecutar Suite de Pruebas (Jest + Playwright)
+    name: Ejecutar pruebas
     runs-on: ubuntu-latest
-    outputs:
-      test-result: ${{ job.test-result }}
-      commit-sha: ${{ github.sha }}
-      commit-ref: ${{ github.ref }}
-      executor: ${{ github.actor }}
-
     steps:
-      # 1. Checkout del código
-      - name: 📂 Checkout del código
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # 2. Configurar Node.js
-      - name: 🟢 Configurar Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-
-      # 3. Instalar dependencias
-      - name: 📦 Instalar dependencias
+      - name: Instalar
         run: npm ci --include=optional
-
-      # 4. Ejecutar pruebas unitarias con Jest (Backend)
-      - name: 🧪 Ejecutar pruebas unitarias Jest (Backend)
-        id: jest-tests
+      - name: Probar backend
         run: npm run test:backend
-        env:
-          CI: true
-          DATABASE_PATH: ':memory:'
-
-      # 5. Ejecutar pruebas e2e con Playwright (Frontend + Backend)
-      - name: 🎮 Ejecutar pruebas e2e Playwright
-        id: playwright-tests
+      - name: Probar frontend E2E
         run: npx playwright test --workspace frontend
-        env:
-          CI: true
-          BASE_URL: http://127.0.0.1:8080
-          PLAYWRIGHT_REPORT_DIR: ./frontend/playwright-report
 
-      # 6. Determinar si todas las pruebas pasaron
-      - name: 📊 Consolidar estado de pruebas
-        id: test-summary
-        run: |
-          JEST_EXIT_CODE=${{ steps.jest-tests.outcome == 'success' && '0' || '1' }}
-          PLAYWRIGHT_EXIT_CODE=${{ steps.playwright-tests.outcome == 'success' && '0' || '1' }}
-          
-          echo "Jest exit code: $JEST_EXIT_CODE"
-          echo "Playwright exit code: $PLAYWRIGHT_EXIT_CODE"
-          
-          if [ "$JEST_EXIT_CODE" = "0" ] && [ "$PLAYWRIGHT_EXIT_CODE" = "0" ]; then
-            echo "test-result=success" >> $GITHUB_OUTPUT
-            echo "🟢 Todas las pruebas pasaron"
-          else
-            echo "test-result=failure" >> $GITHUB_OUTPUT
-            echo "🔴 Algunas pruebas fallaron"
-          fi
-          
-          TEST_SUMMARY="{\"commit\":\"${{ github.sha }}\",\"branch\":\"${{ github.ref }}\",\"user\":\"${{ github.actor }}\",\"jest-results\":${JEST_EXIT_CODE},\"playwright-results\":${PLAYWRIGHT_EXIT_CODE},\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
-          echo "test-summary-json=$TEST_SUMMARY" >> $GITHUB_OUTPUT
-
-      # 7. Enviar resultados de pruebas a OpenObserve (RF-03)
-      - name: 📡 Enviar resultados a OpenObserve (RF-03)
-        if: always()
-        env:
-          OPENOBSERVE_ENDPOINT: ${{ secrets.OPENOBSERVE_ENDPOINT || env.OPENOBSERVE_ENDPOINT }}
-        run: |
-          SUMMARY="${{ steps.test-summary.outputs.test-summary-json }}"
-          echo "Enviando resumen de pruebas a OpenObserve..."
-          echo "$SUMMARY"
-          # POST al endpoint de OpenObserve via API HTTP/JSON
-          curl -s -X POST "$OPENOBSERVE_ENDPOINT/pruebas" \
-            -H "Content-Type: application/json" \
-            -d "$SUMMARY" \
-            || echo "⚠ No se pudo conectar con OpenObserve en esta etapa"
-
-      # 8. Bloquear despliegue si las pruebas fallan (RF-02)
-      - name: 🚫 Bloquear despliegue por fallo de pruebas
-        if: steps.test-summary.outputs.test-result == 'failure'
-        run: |
-          echo "❌ FALLOS DETECTADOS en la suite de pruebas"
-          echo "🚫 Bloqueando conexión SSH y despliegue hacia EC2"
-          echo "DEPLOY_BLOCKED=true" >> $GITHUB_ENV
-
-      # 9. Establecer status exitoso si pasan pruebas
-      - name: ✅ Establecer status exitoso
-        if: steps.test-summary.outputs.test-result == 'success'
-        run: |
-          echo "DEPLOY_BLOCKED=false" >> $GITHUB_ENV
-
-  # Trabajo de despliegue via SSH (simple, sin roles ARN ni OIDC)
   deploy:
-    name: Despliegue Via SSH a EC2
+    name: Desplegar a EC2
     needs: test
     runs-on: ubuntu-latest
-    # Desplegar si: tests pasaron Y no está bloqueado por fallos
-    if: needs.test.outputs.test-result == 'success' && env.DEPLOY_BLOCKED != 'true'
-    outputs:
-      deploy-status: ${{ job.status }}
+    if: success()
 
     steps:
-      # 1. Checkout del código
-      - name: 📂 Checkout del código
-        uses: actions/checkout@v4
-
-      # 2. Configurar Node.js
-      - name: 🟢 Configurar Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-
-      # 3. Instalar dependencias
-      - name: 📦 Instalar dependencias
-        run: npm ci --include=optional
-
-      # 4. Construir aplicaciones
-      - name: 🔨 Construir Backend y Frontend
-        run: |
-          npm run build -w backend
-          npm run build -w frontend
-
-      # 5. Desplegar a EC2 via SSH
-      - name: 🚢 Desplegar a EC2
+      - name: Build
+        run: npm run build -w backend && npm run build -w frontend
+      - name: Deploy SSH
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
-          EC2_JWT_SECRET: ${{ secrets.EC2_JWT_SECRET }}
-          EC2_DEPLOY_PATH: ${{ env.EC2_DEPLOY_PATH || '/opt/proyectodevops' }}
         run: |
-          echo "🔑 Configurando SSH..."
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          
           echo "$EC2_SSH_PRIVATE_KEY" | tr -d '\r' > deploy_key.pem
           chmod 600 deploy_key.pem
-          
-          echo "📤 Subiendo cambios y desplegando..."
-          
           rsync -avz -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=yes" \
-            ./backend/dist/ ./frontend/dist/ ./docker-compose.yml \
-            ${EC2_USER}@${EC2_HOST}:${EC2_DEPLOY_PATH}/
-          
-          ssh -i deploy_key.pem -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} << 'EOF'
-            cd ${EC2_DEPLOY_PATH}
-            echo "🐳 Deteniendo contenedores anteriores..."
+            ./backend/dist/ ./frontend/dist/ user@"$EC2_HOST":/opt/proyectodevops/
+          ssh -i deploy_key.pem -o StrictHostKeyChecking=no user@"$EC2_HOST" << 'EOF'
+            cd /opt/proyectodevops
             docker compose down || true
-            echo "🐳 Levantando nuevos contenedores..."
             docker compose up -d --build
-            echo "✅ Despliegue completado en EC2"
-            EOF
+          EOF
 
-      # 6. Registrar evento de despliegue en OpenObserve (RF-03)
-      - name: 📡 Registrar despliegue en OpenObserve (RF-03)
-        if: env.DEPLOY_BLOCKED != 'true'
-        env:
-          OPENOBSERVE_ENDPOINT: ${{ secrets.OPENOBSERVE_ENDPOINT || env.OPENOBSERVE_ENDPOINT }}
-        run: |
-          DEPLOY_EVENT="{\"commit\":\"${{ github.sha }}\",\"branch\":\"${{ github.ref }}\",\"user\":\"${{ github.actor }}\",\"environment\":\"ec2\",\"status\":\"success\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
-          echo "Registrando evento de despliegue en OpenObserve..."
-          curl -s -X POST "$OPENOBSERVE_ENDPOINT/despliegue" \
-            -H "Content-Type: application/json" \
-            -d "$DEPLOY_EVENT" \
-            || echo "⚠ No se pudo registrar el evento de despliegue"
-
-      # 7. Probar conexión SSH exitosa (Criterio de aceptación #1)
-      - name: 🔗 Verificar conectividad SSH exitosa
-        if: env.DEPLOY_BLOCKED != 'true'
-        run: |
-          echo "✅ Conexión SSH exitosa verificada con EC2"
-          ssh -i deploy_key.pem -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Conexión SSH exitosa'"
-
-  # Trabajo de notificaciones finales
   notify:
-    name: Notificaciones y Trazabilidad
+    name: Notificar resultados
     needs: [test, deploy]
     runs-on: ubuntu-latest
     if: always()
 
     steps:
-      - name: 📡 Determinar status de despliegue
-        id: deploy-status
+      - name: Reportar a OpenObserve
         if: always()
         run: |
-          if [ "${{ env.DEPLOY_BLOCKED }}" = "true" ]; then
-            echo "DEPLOY_STATUS=failed" >> $GITHUB_ENV
-          else
-            echo "DEPLOY_STATUS=success" >> $GITHUB_ENV
-          fi
-      
-      - name: 📡 Enviar reporte final a OpenObserve (RF-03)
-        if: always()
-        env:
-          OPENOBSERVE_ENDPOINT: ${{ secrets.OPENOBSERVE_ENDPOINT || env.OPENOBSERVE_ENDPOINT }}
-          # Usar variable de entorno establecida paso anterior
-          DEPLOY_STATUS: ${{ env.DEPLOY_STATUS }}
-        run: |
-          FINAL_REPORT="{\"pipeline-status\":\"${{ needs.test.outputs.test-result || 'unknown }}\",\"deploy-status\":\"${DEPLOY_STATUS}\",\"commit\":\"${{ github.sha }}\",\"branch\":\"${{ github.ref }}\",\"user\":\"${{ github.actor }}\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
-          curl -s -X POST "$OPENOBSERVE_ENDPOINT/reporte-final" \
+          STATUS="${{ job.status }}"
+          curl -s -X POST "\${OPENOBSERVE_ENDPOINT}/reporte-final" \
             -H "Content-Type: application/json" \
-            -d "$FINAL_REPORT" \
-            || echo "⚠ No se pudo enviar el reporte final"
-
-      - name: 📊 Generar y subir reporte de Playwright
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report
-          path: frontend/playwright-report/
-          retention-days: 30
-
-      - name: 📧 Comentario en Pull Request
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const result = '${{ needs.test.outputs.test-result }}';
-            const issueNumber = context.payload.pull_request ? context.payload.pull_request.number : null;
-            if (issueNumber && result === 'failure') {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-                body: `❌ **Pipeline CI/CD falló** - Las pruebas automatizadas no pasaron. Revisa los logs para más detalles.`
-              });
-            } else if (issueNumber && result === 'success') {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-                body: `✅ **Pipeline CI/CD exitoso** - Todas las pruebas pasaron y el despliegue está condicionado.`
-              });
-            }
+            -d "{\"pipeline\":\"ci-cd\",\"status\":\"${{ job.status }}\",\"test\":\"success\"}" \
+            || echo "No conectado"

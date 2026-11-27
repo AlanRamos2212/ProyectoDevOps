@@ -41,10 +41,10 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci --include=optional
-      - name: Configure SSH known_hosts
+      - name: Prepare SSH key
         run: |
-          [ -f ~/.ssh/known_hosts ] || touch ~/.ssh/known_hosts
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || echo "Known hosts update skipped"
+          echo "$EC2_SSH_PRIVATE_KEY" | tr -d '\r' > deploy_key.pem
+          chmod 600 deploy_key.pem
       - name: Build
         run: npm run build -w backend && npm run build -w frontend
       - name: Deploy SSH
@@ -52,9 +52,8 @@ jobs:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
         run: |
-          rsync -avz -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=yes" \
+          rsync -avz -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=no" \
             ./backend/dist/ ./frontend/dist/ user@"$EC2_HOST":/opt/proyectodevops/
           ssh -i deploy_key.pem -o StrictHostKeyChecking=no user@"$EC2_HOST" << 'EOF'
             cd /opt/proyectodevops

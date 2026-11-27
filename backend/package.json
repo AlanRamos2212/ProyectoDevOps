@@ -5,7 +5,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "jest --config jest.config.json --runInBand"
+    "test": "jest --config jest.config.json --runInBand --globals '{\"describe\": true, \"it\": true, \"expect\": true}'"
   },
   "dependencies": {
     "ajv": "^8.17.1",

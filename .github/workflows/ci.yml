@@ -78,7 +78,27 @@ jobs:
           test -s "$DEPLOY_DIR/.env" || { echo "Missing $DEPLOY_DIR/.env; keep JWT_SECRET there on EC2"; exit 1; }
           git -C "$DEPLOY_DIR" fetch origin main
           git -C "$DEPLOY_DIR" reset --hard "$GITHUB_SHA"
-      - name: Build and replace running containers
+      - name: Build backend image with limited parallelism
+        env:
+          DEPLOY_DIR: /opt/proyectodevops-app
+        run: |
+          sudo docker compose \
+            --parallel 1 \
+            --project-name proyectodevops-app \
+            --env-file "$DEPLOY_DIR/.env" \
+            --file "$DEPLOY_DIR/docker-compose.yml" \
+            build backend
+      - name: Build frontend image with limited parallelism
+        env:
+          DEPLOY_DIR: /opt/proyectodevops-app
+        run: |
+          sudo docker compose \
+            --parallel 1 \
+            --project-name proyectodevops-app \
+            --env-file "$DEPLOY_DIR/.env" \
+            --file "$DEPLOY_DIR/docker-compose.yml" \
+            build frontend
+      - name: Start updated containers
         env:
           DEPLOY_DIR: /opt/proyectodevops-app
         run: |
@@ -86,7 +106,7 @@ jobs:
             --project-name proyectodevops-app \
             --env-file "$DEPLOY_DIR/.env" \
             --file "$DEPLOY_DIR/docker-compose.yml" \
-            up --detach --build --remove-orphans
+            up --detach --no-build --remove-orphans
       - name: Verify deployed services
         env:
           DEPLOY_DIR: /opt/proyectodevops-app

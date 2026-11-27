@@ -48,6 +48,8 @@ jobs:
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
           echo "$EC2_SSH_PRIVATE_KEY" | tr -d '\r' > deploy_key.pem
           chmod 600 deploy_key.pem
+          # Test SSH connectivity before deploying
+          ssh -i deploy_key.pem -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "echo 'SSH connection test successful'" || echo "SSH connection test failed - will not deploy"
       - name: Build
         run: npm run build -w backend && npm run build -w frontend
       - name: Deploy SSH

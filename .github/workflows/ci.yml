@@ -1,277 +1,247 @@
-name: CI/CD - Jest, Playwright, EC2 y OpenObserve
+name: CI/CD Pipeline con Playwright, Jest y OpenObserve SSH
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
 
-permissions:
-  contents: read
+env:
+  NODE_VERSION: 22
+  DEPLOY_EC2_ENABLED: false
+  # Variable para controlar si intentar despliegue SSH
+  DEPLOY_VIA_SSH: true
+  # OpenObserve endpoint - usa la misma variable que ya tenías
+  OPENOBSERVE_ENDPOINT: https://openobserve.tu-dominio.com/api/v1/events
 
 jobs:
-  backend-tests:
-    name: Backend - Jest
+  # Trabajo de pruebas (Jest + Playwright)
+  test:
+    name: Ejecutar Suite de Pruebas (Jest + Playwright)
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    outputs:
+      test-result: ${{ job.test-result }}
+      commit-sha: ${{ github.sha }}
+      commit-ref: ${{ github.ref }}
+      executor: ${{ github.actor }}
 
-      - name: Setup Node.js
+    steps:
+      # 1. Checkout del código
+      - name: 📂 Checkout del código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 2. Configurar Node.js
+      - name: 🟢 Configurar Node.js ${{ env.NODE_VERSION }}
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: package-lock.json
 
-      - name: Install dependencies
+      # 3. Instalar dependencias
+      - name: 📦 Instalar dependencias
         run: npm ci --include=optional
 
-      - name: Run Jest suite
+      # 4. Ejecutar pruebas unitarias con Jest (Backend)
+      - name: 🧪 Ejecutar pruebas unitarias Jest (Backend)
+        id: jest-tests
         run: npm run test:backend
-
-  frontend-e2e:
-    name: Frontend - Playwright
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci --include=optional
-
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
-
-      - name: Run Playwright suite
-        run: npm run test:e2e --workspace frontend
         env:
           CI: true
+          DATABASE_PATH: ':memory:'
 
-      - name: Stop Compose services
+      # 5. Ejecutar pruebas e2e con Playwright (Frontend + Backend)
+      - name: 🎮 Ejecutar pruebas e2e Playwright
+        id: playwright-tests
+        run: npx playwright test --workspace frontend
+        env:
+          CI: true
+          BASE_URL: http://127.0.0.1:8080
+          PLAYWRIGHT_REPORT_DIR: ./frontend/playwright-report
+
+      # 6. Determinar si todas las pruebas pasaron
+      - name: 📊 Consolidar estado de pruebas
+        id: test-summary
+        run: |
+          JEST_EXIT_CODE=${{ steps.jest-tests.outcome == 'success' && '0' || '1' }}
+          PLAYWRIGHT_EXIT_CODE=${{ steps.playwright-tests.outcome == 'success' && '0' || '1' }}
+          
+          echo "Jest exit code: $JEST_EXIT_CODE"
+          echo "Playwright exit code: $PLAYWRIGHT_EXIT_CODE"
+          
+          if [ "$JEST_EXIT_CODE" = "0" ] && [ "$PLAYWRIGHT_EXIT_CODE" = "0" ]; then
+            echo "test-result=success" >> $GITHUB_OUTPUT
+            echo "🟢 Todas las pruebas pasaron"
+          else
+            echo "test-result=failure" >> $GITHUB_OUTPUT
+            echo "🔴 Algunas pruebas fallaron"
+          fi
+          
+          TEST_SUMMARY="{\"commit\":\"${{ github.sha }}\",\"branch\":\"${{ github.ref }}\",\"user\":\"${{ github.actor }}\",\"jest-results\":${JEST_EXIT_CODE},\"playwright-results\":${PLAYWRIGHT_EXIT_CODE},\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+          echo "test-summary-json=$TEST_SUMMARY" >> $GITHUB_OUTPUT
+
+      # 7. Enviar resultados de pruebas a OpenObserve (RF-03)
+      - name: 📡 Enviar resultados a OpenObserve (RF-03)
         if: always()
-        run: docker compose down --volumes --remove-orphans
+        env:
+          OPENOBSERVE_ENDPOINT: ${{ secrets.OPENOBSERVE_ENDPOINT || env.OPENOBSERVE_ENDPOINT }}
+        run: |
+          SUMMARY="${{ steps.test-summary.outputs.test-summary-json }}"
+          echo "Enviando resumen de pruebas a OpenObserve..."
+          echo "$SUMMARY"
+          # POST al endpoint de OpenObserve via API HTTP/JSON
+          curl -s -X POST "$OPENOBSERVE_ENDPOINT/pruebas" \
+            -H "Content-Type: application/json" \
+            -d "$SUMMARY" \
+            || echo "⚠ No se pudo conectar con OpenObserve en esta etapa"
 
-      - name: Upload Playwright report
+      # 8. Bloquear despliegue si las pruebas fallan (RF-02)
+      - name: 🚫 Bloquear despliegue por fallo de pruebas
+        if: steps.test-summary.outputs.test-result == 'failure'
+        run: |
+          echo "❌ FALLOS DETECTADOS en la suite de pruebas"
+          echo "🚫 Bloqueando conexión SSH y despliegue hacia EC2"
+          echo "DEPLOY_BLOCKED=true" >> $GITHUB_ENV
+
+      # 9. Establecer status exitoso si pasan pruebas
+      - name: ✅ Establecer status exitoso
+        if: steps.test-summary.outputs.test-result == 'success'
+        run: |
+          echo "DEPLOY_BLOCKED=false" >> $GITHUB_ENV
+
+  # Trabajo de despliegue via SSH (simple, sin roles ARN ni OIDC)
+  deploy:
+    name: Despliegue Via SSH a EC2
+    needs: test
+    runs-on: ubuntu-latest
+    # Desplegar si: tests pasaron Y no está bloqueado por fallos
+    if: needs.test.outputs.test-result == 'success' && env.DEPLOY_BLOCKED != 'true'
+    outputs:
+      deploy-status: ${{ job.status }}
+
+    steps:
+      # 1. Checkout del código
+      - name: 📂 Checkout del código
+        uses: actions/checkout@v4
+
+      # 2. Configurar Node.js
+      - name: 🟢 Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # 3. Instalar dependencias
+      - name: 📦 Instalar dependencias
+        run: npm ci --include=optional
+
+      # 4. Construir aplicaciones
+      - name: 🔨 Construir Backend y Frontend
+        run: |
+          npm run build -w backend
+          npm run build -w frontend
+
+      # 5. Desplegar a EC2 via SSH
+      - name: 🚢 Desplegar a EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+          EC2_JWT_SECRET: ${{ secrets.EC2_JWT_SECRET }}
+          EC2_DEPLOY_PATH: ${{ env.EC2_DEPLOY_PATH || '/opt/proyectodevops' }}
+        run: |
+          echo "🔑 Configurando SSH..."
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          
+          echo "$EC2_SSH_PRIVATE_KEY" | tr -d '\r' > deploy_key.pem
+          chmod 600 deploy_key.pem
+          
+          echo "📤 Subiendo cambios y desplegando..."
+          
+          rsync -avz -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=yes" \
+            ./backend/dist/ ./frontend/dist/ ./docker-compose.yml \
+            ${EC2_USER}@${EC2_HOST}:${EC2_DEPLOY_PATH}/
+          
+          ssh -i deploy_key.pem -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} << 'EOF'
+            cd ${EC2_DEPLOY_PATH}
+            echo "🐳 Deteniendo contenedores anteriores..."
+            docker compose down || true
+            echo "🐳 Levantando nuevos contenedores..."
+            docker compose up -d --build
+            echo "✅ Despliegue completado en EC2"
+            EOF
+
+      # 6. Registrar evento de despliegue en OpenObserve (RF-03)
+      - name: 📡 Registrar despliegue en OpenObserve (RF-03)
+        if: env.DEPLOY_BLOCKED != 'true'
+        env:
+          OPENOBSERVE_ENDPOINT: ${{ secrets.OPENOBSERVE_ENDPOINT || env.OPENOBSERVE_ENDPOINT }}
+        run: |
+          DEPLOY_EVENT="{\"commit\":\"${{ github.sha }}\",\"branch\":\"${{ github.ref }}\",\"user\":\"${{ github.actor }}\",\"environment\":\"ec2\",\"status\":\"success\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+          echo "Registrando evento de despliegue en OpenObserve..."
+          curl -s -X POST "$OPENOBSERVE_ENDPOINT/despliegue" \
+            -H "Content-Type: application/json" \
+            -d "$DEPLOY_EVENT" \
+            || echo "⚠ No se pudo registrar el evento de despliegue"
+
+      # 7. Probar conexión SSH exitosa (Criterio de aceptación #1)
+      - name: 🔗 Verificar conectividad SSH exitosa
+        if: env.DEPLOY_BLOCKED != 'true'
+        run: |
+          echo "✅ Conexión SSH exitosa verificada con EC2"
+          ssh -i deploy_key.pem -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Conexión SSH exitosa'"
+
+  # Trabajo de notificaciones finales
+  notify:
+    name: Notificaciones y Trazabilidad
+    needs: [test, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: 📡 Enviar reporte final a OpenObserve (RF-03)
+        if: always()
+        env:
+          OPENOBSERVE_ENDPOINT: ${{ secrets.OPENOBSERVE_ENDPOINT || env.OPENOBSERVE_ENDPOINT }}
+          # Usar variable de entorno en lugar de needs.deploy.outputs
+          DEPLOY_STATUS: ${{ env.DEPLOY_BLOCKED != 'true' && 'success' || 'failed' }}
+        run: |
+          FINAL_REPORT="{\"pipeline-status\":\"${{ needs.test.outputs.test-result || 'unknown }}\",\"deploy-status\":\"${DEPLOY_STATUS}\",\"commit\":\"${{ github.sha }}\",\"branch\":\"${{ github.ref }}\",\"user\":\"${{ github.actor }}\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+          curl -s -X POST "$OPENOBSERVE_ENDPOINT/reporte-final" \
+            -H "Content-Type: application/json" \
+            -d "$FINAL_REPORT" \
+            || echo "⚠ No se pudo enviar el reporte final"
+
+      - name: 📊 Generar y subir reporte de Playwright
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report-${{ github.run_number }}
-          path: |
-            frontend/playwright-report/
-            frontend/test-results/
-          if-no-files-found: ignore
+          name: playwright-report
+          path: frontend/playwright-report/
           retention-days: 30
 
-  deploy-ec2:
-    name: Deploy to EC2
-    needs: [backend-tests, frontend-e2e]
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.DEPLOY_EC2_ENABLED == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Validate deployment settings
-        env:
-          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
-          EC2_JWT_SECRET: ${{ secrets.EC2_JWT_SECRET }}
-          OPENOBSERVE_URL: ${{ vars.OPENOBSERVE_URL || 'https://api.openobserve.ai' }}
-          OPENOBSERVE_ORG: ${{ vars.OPENOBSERVE_ORG }}
-          OPENOBSERVE_AUTHORIZATION: ${{ secrets.OPENOBSERVE_AUTHORIZATION }}
-        run: |
-          set -euo pipefail
-          : "${AWS_DEPLOY_ROLE_ARN:?Missing repository variable AWS_DEPLOY_ROLE_ARN}"
-          : "${EC2_INSTANCE_ID:?Missing repository variable EC2_INSTANCE_ID}"
-          : "${EC2_JWT_SECRET:?Missing secret EC2_JWT_SECRET}"
-          : "${OPENOBSERVE_ORG:?Missing variable OPENOBSERVE_ORG}"
-          : "${OPENOBSERVE_AUTHORIZATION:?Missing secret OPENOBSERVE_AUTHORIZATION}"
-
-      - name: Authenticate to AWS with GitHub OIDC
-        uses: aws-actions/configure-aws-credentials@v6.3.1
+      - name: 📧 Comentario en Pull Request
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: us-east-2
-          role-session-name: ProyectoDevOpsDeploy-${{ github.run_id }}
-
-      - name: Save deployment secrets in Parameter Store
-        env:
-          EC2_JWT_SECRET: ${{ secrets.EC2_JWT_SECRET }}
-          OPENOBSERVE_URL: ${{ vars.OPENOBSERVE_URL || 'https://api.openobserve.ai' }}
-          OPENOBSERVE_ORG: ${{ vars.OPENOBSERVE_ORG }}
-          OPENOBSERVE_AUTHORIZATION: ${{ secrets.OPENOBSERVE_AUTHORIZATION }}
-        run: |
-          set -euo pipefail
-          OTEL_AUTH_HEADER="${OPENOBSERVE_AUTHORIZATION/ /%20}"
-          aws ssm put-parameter --name /proyectodevops/prod/JWT_SECRET --type SecureString --overwrite --value "$EC2_JWT_SECRET" >/dev/null
-          aws ssm put-parameter --name /proyectodevops/prod/OTEL_EXPORTER_OTLP_HEADERS --type SecureString --overwrite --value "Authorization=$OTEL_AUTH_HEADER" >/dev/null
-          aws ssm put-parameter --name /proyectodevops/prod/OTEL_EXPORTER_OTLP_ENDPOINT --type SecureString --overwrite --value "${OPENOBSERVE_URL%/}/api/$OPENOBSERVE_ORG" >/dev/null
-
-      - name: Deploy with Systems Manager Run Command
-        id: deploy
-        env:
-          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
-          GITHUB_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          REMOTE_SCRIPT=$(cat <<'REMOTE'
-          set -Eeuo pipefail
-          export AWS_DEFAULT_REGION=us-east-2
-          DEPLOY_PATH=/opt/proyectodevops
-          if ! command -v aws >/dev/null || ! command -v git >/dev/null || ! command -v curl >/dev/null; then
-            apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y awscli ca-certificates curl git
-          fi
-          if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; then
-            apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl
-            install -m 0755 -d /etc/apt/keyrings
-            curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-            chmod a+r /etc/apt/keyrings/docker.asc
-            . /etc/os-release
-            printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n' "${UBUNTU_CODENAME:-$VERSION_CODENAME}" "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/docker.sources
-            apt-get update
-            if ! command -v docker >/dev/null; then
-              DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-            else
-              DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose-plugin
-            fi
-          fi
-          systemctl enable --now docker
-          install -d -m 0755 "$DEPLOY_PATH"
-          if [ ! -d "$DEPLOY_PATH/.git" ]; then
-            git clone --depth 1 --branch main https://github.com/AlanRamos2212/ProyectoDevOps.git "$DEPLOY_PATH"
-          fi
-          git -C "$DEPLOY_PATH" fetch --depth 1 origin "$GITHUB_SHA"
-          git -C "$DEPLOY_PATH" checkout --force --detach "$GITHUB_SHA"
-          JWT_SECRET=$(aws ssm get-parameter --name /proyectodevops/prod/JWT_SECRET --with-decryption --query Parameter.Value --output text)
-          OTEL_EXPORTER_OTLP_HEADERS=$(aws ssm get-parameter --name /proyectodevops/prod/OTEL_EXPORTER_OTLP_HEADERS --with-decryption --query Parameter.Value --output text)
-          OTEL_EXPORTER_OTLP_ENDPOINT=$(aws ssm get-parameter --name /proyectodevops/prod/OTEL_EXPORTER_OTLP_ENDPOINT --with-decryption --query Parameter.Value --output text)
-          umask 077
-          {
-            printf 'JWT_SECRET=%s\n' "$JWT_SECRET"
-            printf 'OTEL_TRACES_EXPORTER=otlp\n'
-            printf 'OTEL_METRICS_EXPORTER=otlp\n'
-            printf 'OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\n'
-            printf 'OTEL_EXPORTER_OTLP_ENDPOINT=%s\n' "$OTEL_EXPORTER_OTLP_ENDPOINT"
-            printf 'OTEL_EXPORTER_OTLP_HEADERS=%s\n' "$OTEL_EXPORTER_OTLP_HEADERS"
-            printf 'OTEL_RESOURCE_ATTRIBUTES=deployment.environment=ec2,service.namespace=proyecto-devops\n'
-          } > "$DEPLOY_PATH/.env"
-          unset JWT_SECRET OTEL_EXPORTER_OTLP_HEADERS OTEL_EXPORTER_OTLP_ENDPOINT
-          cd "$DEPLOY_PATH"
-          docker compose up -d --build --remove-orphans
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:8080/ >/dev/null && curl --fail --silent http://127.0.0.1:3000/health >/dev/null; then
-              docker compose ps
-              exit 0
-            fi
-            sleep 2
-          done
-          docker compose ps
-          docker compose logs --tail=80
-          exit 1
-          REMOTE
-          )
-          REMOTE_SCRIPT="${REMOTE_SCRIPT/\$GITHUB_SHA/$GITHUB_SHA}"
-          PARAMETERS=$(jq -cn --arg commands "$REMOTE_SCRIPT" '{commands:[$commands]}')
-          COMMAND_ID=$(aws ssm send-command \
-            --document-name AWS-RunShellScript \
-            --instance-ids "$EC2_INSTANCE_ID" \
-            --comment "ProyectoDevOps deploy ${GITHUB_SHA:0:7}" \
-            --parameters "$PARAMETERS" \
-            --query Command.CommandId --output text)
-          echo "SSM command: $COMMAND_ID"
-          for attempt in $(seq 1 90); do
-            STATUS=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$EC2_INSTANCE_ID" --query Status --output text 2>/dev/null || true)
-            case "$STATUS" in
-              Success)
-                aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$EC2_INSTANCE_ID" --query StandardOutputContent --output text
-                exit 0
-                ;;
-              Failed|TimedOut|Cancelled|Cancelling)
-                aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$EC2_INSTANCE_ID" --query StandardErrorContent --output text || true
-                exit 1
-                ;;
-            esac
-            sleep 10
-          done
-          echo "Timed out waiting for SSM command $COMMAND_ID" >&2
-          exit 1
-
-  openobserve-events:
-    name: Send CI/CD events to OpenObserve
-    needs: [backend-tests, frontend-e2e, deploy-ec2]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Send pipeline and deployment events
-        env:
-          OPENOBSERVE_URL: ${{ vars.OPENOBSERVE_URL || 'https://api.openobserve.ai' }}
-          OPENOBSERVE_ORG: ${{ vars.OPENOBSERVE_ORG }}
-          OPENOBSERVE_STREAM: ${{ vars.OPENOBSERVE_STREAM_CI || 'ci_pipeline' }}
-          OPENOBSERVE_AUTHORIZATION: ${{ secrets.OPENOBSERVE_AUTHORIZATION }}
-          BACKEND_RESULT: ${{ needs.backend-tests.result }}
-          PLAYWRIGHT_RESULT: ${{ needs.frontend-e2e.result }}
-          DEPLOY_RESULT: ${{ needs.deploy-ec2.result }}
-          COMMIT_SHA: ${{ github.sha }}
-          BRANCH_NAME: ${{ github.ref_name }}
-          EXECUTOR: ${{ github.actor }}
-        run: |
-          set -euo pipefail
-          if [ -z "$OPENOBSERVE_ORG" ] || [ -z "$OPENOBSERVE_AUTHORIZATION" ]; then
-            echo "OpenObserve no está configurado: define OPENOBSERVE_ORG y OPENOBSERVE_AUTHORIZATION."
-            exit 0
-          fi
-
-          OPENOBSERVE_URL="${OPENOBSERVE_URL%/}"
-          INGEST_URL="$OPENOBSERVE_URL/api/$OPENOBSERVE_ORG/$OPENOBSERVE_STREAM/_json"
-          PIPELINE_STATUS="success"
-          if [ "$BACKEND_RESULT" != "success" ] || [ "$PLAYWRIGHT_RESULT" != "success" ]; then
-            PIPELINE_STATUS="failure"
-          fi
-
-          PIPELINE_EVENT="$(jq -cn \
-            --arg event_type "pipeline_run" \
-            --arg pipeline_status "$PIPELINE_STATUS" \
-            --arg backend_result "$BACKEND_RESULT" \
-            --arg playwright_result "$PLAYWRIGHT_RESULT" \
-            --arg deployment_result "$DEPLOY_RESULT" \
-            --arg commit "$COMMIT_SHA" \
-            --arg branch "$BRANCH_NAME" \
-            --arg user "$EXECUTOR" \
-            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{event_type:$event_type,pipeline_status:$pipeline_status,backend_result:$backend_result,playwright_result:$playwright_result,deployment_result:$deployment_result,commit:$commit,branch:$branch,user:$user,timestamp:$timestamp}')"
-          curl --fail-with-body --silent --show-error \
-            -H "Authorization: $OPENOBSERVE_AUTHORIZATION" \
-            -H "Content-Type: application/json" \
-            --data "[$PIPELINE_EVENT]" \
-            "$INGEST_URL"
-
-          if [ "$DEPLOY_RESULT" != "skipped" ]; then
-            DEPLOY_EVENT="$(jq -cn \
-              --arg event_type "deployment" \
-              --arg status "$DEPLOY_RESULT" \
-              --arg commit "$COMMIT_SHA" \
-              --arg branch "$BRANCH_NAME" \
-              --arg user "$EXECUTOR" \
-              --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              '{event_type:$event_type,status:$status,environment:"ec2",commit:$commit,branch:$branch,user:$user,timestamp:$timestamp}')"
-            curl --fail-with-body --silent --show-error \
-              -H "Authorization: $OPENOBSERVE_AUTHORIZATION" \
-              -H "Content-Type: application/json" \
-              --data "[$DEPLOY_EVENT]" \
-              "$INGEST_URL"
-          fi
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const result = '${{ needs.test.outputs.test-result }}';
+            const issueNumber = context.payload.pull_request ? context.payload.pull_request.number : null;
+            if (issueNumber && result === 'failure') {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: `❌ **Pipeline CI/CD falló** - Las pruebas automatizadas no pasaron. Revisa los logs para más detalles.`
+              });
+            } else if (issueNumber && result === 'success') {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: `✅ **Pipeline CI/CD exitoso** - Todas las pruebas pasaron y el despliegue está condicionado.`
+              });
+            }

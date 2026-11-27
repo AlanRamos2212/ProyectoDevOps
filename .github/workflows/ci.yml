@@ -201,12 +201,22 @@ jobs:
     if: always()
 
     steps:
+      - name: 📡 Determinar status de despliegue
+        id: deploy-status
+        if: always()
+        run: |
+          if [ "${{ env.DEPLOY_BLOCKED }}" = "true" ]; then
+            echo "DEPLOY_STATUS=failed" >> $GITHUB_ENV
+          else
+            echo "DEPLOY_STATUS=success" >> $GITHUB_ENV
+          fi
+      
       - name: 📡 Enviar reporte final a OpenObserve (RF-03)
         if: always()
         env:
           OPENOBSERVE_ENDPOINT: ${{ secrets.OPENOBSERVE_ENDPOINT || env.OPENOBSERVE_ENDPOINT }}
-          # Usar variable de entorno en lugar de needs.deploy.outputs
-          DEPLOY_STATUS: ${{ env.DEPLOY_BLOCKED != 'true' && 'success' || 'failed' }}
+          # Usar variable de entorno establecida paso anterior
+          DEPLOY_STATUS: ${{ env.DEPLOY_STATUS }}
         run: |
           FINAL_REPORT="{\"pipeline-status\":\"${{ needs.test.outputs.test-result || 'unknown }}\",\"deploy-status\":\"${DEPLOY_STATUS}\",\"commit\":\"${{ github.sha }}\",\"branch\":\"${{ github.ref }}\",\"user\":\"${{ github.actor }}\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
           curl -s -X POST "$OPENOBSERVE_ENDPOINT/reporte-final" \

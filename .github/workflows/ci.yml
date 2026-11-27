@@ -1,4 +1,4 @@
-name: CI/CD Pipeline SSH
+name: CI/CD Pipeline con Jest, Playwright y EC2
 
 on:
   push:
@@ -6,73 +6,150 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 env:
   NODE_VERSION: 22
-  OPENOBSERVE_ENDPOINT: https://openobserve.tu-dominio.com/api/v1/events
 
 jobs:
-  test:
-    name: Ejecutar pruebas
+  backend-jest:
+    name: Backend - Jest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+          cache-dependency-path: package-lock.json
       - name: Install dependencies
         run: npm ci --include=optional
-      - name: Probar backend (Jest)
-        run: npx jest --testPathPattern="backend/test" --verbose 2>&1 || echo "Tests had issues"
-      - name: Probar frontend E2E (Playwright)
-        run: npx playwright test 2>&1 || echo "Playwright tests had issues"
+      - name: Run Jest
+        run: npm run test:backend
+
+  frontend-playwright:
+    name: Frontend - Playwright
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install dependencies
+        run: npm ci --include=optional
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - name: Run Playwright
+        run: npm run test:e2e --workspace frontend
+      - name: Stop test containers
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+      - name: Upload Playwright HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
 
   deploy:
-    name: Desplegar a EC2
-    needs: test
-    runs-on: ubuntu-latest
-    if: success()
-
+    name: Deploy to EC2
+    needs: [backend-jest, frontend-playwright]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, ec2]
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - name: Install dependencies
-        run: npm ci --include=optional
-      - name: Prepare SSH key
-        run: |
-          echo "$EC2_SSH_PRIVATE_KEY" | tr -d '\r' > deploy_key.pem
-          chmod 600 deploy_key.pem
-      - name: Build
-        run: npm run build -w backend && npm run build -w frontend
-      - name: Deploy SSH
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+      - name: Verify EC2 deployment directory
         env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          DEPLOY_DIR: /opt/proyectodevops-app
         run: |
-          rsync -avz -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=no" \
-            ./backend/dist/ ./frontend/dist/ user@"$EC2_HOST":/opt/proyectodevops/
-          ssh -i deploy_key.pem -o StrictHostKeyChecking=no user@"$EC2_HOST" << 'EOF'
-            cd /opt/proyectodevops
-            docker compose down || true
-            docker compose up -d --build
-          EOF
+          test -d "$DEPLOY_DIR/.git" || { echo "Missing git checkout at $DEPLOY_DIR"; exit 1; }
+          test -s "$DEPLOY_DIR/.env" || { echo "Missing $DEPLOY_DIR/.env; keep JWT_SECRET there on EC2"; exit 1; }
+          git -C "$DEPLOY_DIR" fetch origin main
+          git -C "$DEPLOY_DIR" reset --hard "$GITHUB_SHA"
+      - name: Build and replace running containers
+        env:
+          DEPLOY_DIR: /opt/proyectodevops-app
+        run: |
+          sudo docker compose \
+            --project-name proyectodevops-app \
+            --env-file "$DEPLOY_DIR/.env" \
+            --file "$DEPLOY_DIR/docker-compose.yml" \
+            up --detach --build --remove-orphans
+      - name: Verify deployed services
+        env:
+          DEPLOY_DIR: /opt/proyectodevops-app
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/health >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --show-error http://127.0.0.1:3000/health
+          curl --fail --silent --show-error http://127.0.0.1:8080/ >/dev/null
+          sudo docker compose \
+            --project-name proyectodevops-app \
+            --env-file "$DEPLOY_DIR/.env" \
+            --file "$DEPLOY_DIR/docker-compose.yml" \
+            ps
 
-  notify:
-    name: Notificar resultados
-    needs: [test, deploy]
-    runs-on: ubuntu-latest
+  report-openobserve:
+    name: Send CI/CD event to OpenObserve
+    needs: [backend-jest, frontend-playwright, deploy]
     if: always()
-
+    runs-on: ubuntu-latest
     steps:
-      - name: Reportar a OpenObserve
-        if: always()
+      - name: Send pipeline result
+        env:
+          OPENOBSERVE_URL: ${{ vars.OPENOBSERVE_URL }}
+          OPENOBSERVE_ORG: ${{ vars.OPENOBSERVE_ORG }}
+          OPENOBSERVE_AUTHORIZATION: ${{ secrets.OPENOBSERVE_AUTHORIZATION }}
+          BACKEND_RESULT: ${{ needs.backend-jest.result }}
+          PLAYWRIGHT_RESULT: ${{ needs.frontend-playwright.result }}
+          DEPLOYMENT_RESULT: ${{ needs.deploy.result }}
         run: |
-          STATUS="${{ job.status }}"
-          curl -s -X POST "\${OPENOBSERVE_ENDPOINT}/reporte-final" \
-            -H "Content-Type: application/json" \
-            -d "{\"pipeline\":\"ci-cd\",\"status\":\"${{ job.status }}\",\"test\":\"completed\"}" \
-            || echo "No conectado OpenObserve"
+          if [[ -z "$OPENOBSERVE_URL" || -z "$OPENOBSERVE_ORG" || -z "$OPENOBSERVE_AUTHORIZATION" ]]; then
+            echo "OpenObserve settings are missing; skipping pipeline event."
+            exit 0
+          fi
+
+          pipeline_status=success
+          if [[ "$BACKEND_RESULT" != success || "$PLAYWRIGHT_RESULT" != success || "$DEPLOYMENT_RESULT" == failure ]]; then
+            pipeline_status=failure
+          fi
+
+          auth_header="$OPENOBSERVE_AUTHORIZATION"
+          if [[ "$auth_header" != Basic\ * ]]; then
+            auth_header="Basic $auth_header"
+          fi
+
+          payload=$(jq -n \
+            --arg event_type pipeline_run \
+            --arg pipeline_status "$pipeline_status" \
+            --arg backend_result "$BACKEND_RESULT" \
+            --arg playwright_result "$PLAYWRIGHT_RESULT" \
+            --arg deployment_result "$DEPLOYMENT_RESULT" \
+            --arg commit "$GITHUB_SHA" \
+            --arg branch "$GITHUB_REF_NAME" \
+            --arg user "$GITHUB_ACTOR" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{event_type:$event_type, pipeline_status:$pipeline_status, backend_result:$backend_result, playwright_result:$playwright_result, deployment_result:$deployment_result, commit:$commit, branch:$branch, user:$user, timestamp:$timestamp}')
+
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            "${OPENOBSERVE_URL%/}/api/${OPENOBSERVE_ORG}/ci_pipeline/_json" \
+            --header "Authorization: $auth_header" \
+            --header "Content-Type: application/json" \
+            --data-binary "[$payload]"

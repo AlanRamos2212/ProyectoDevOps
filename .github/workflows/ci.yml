@@ -23,7 +23,7 @@ jobs:
       - name: Probar backend
         run: npm run test:backend
       - name: Probar frontend E2E
-        run: npx playwright test --workspace frontend
+        run: npx playwright test
 
   deploy:
     name: Desplegar a EC2
